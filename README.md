@@ -1,8 +1,22 @@
-# Acute Stroke Patient Classification System
+# Confidence-Linked and Uncertainty-Based Staged Framework (CLUES) for Phenotype Validation Using LLMs
 
 ## Overview
 
-This system analyzes medical imaging reports to classify acute stroke patients. It uses a combination of Zero-Shot learning, Few-Shot learning, and RAG (Retrieval-Augmented Generation) techniques to achieve accurate classification.
+CLUES (Confidence-Linked and Uncertainty-Based Staged Framework) is a three-stage system designed to classify cases for disease of interest while optimizing efficiency and reliability through uncertainty quantification and selective human review. It integrates Large Language Models (LLMs) with entropy-based uncertainty measures to enhance the accuracy and consistency of phenotype validation in large-scale datasets. As a pilot study, we applied CLUES to imaging reports to assess its performance in identifying stroke disease in hospitalized patients.
+
+Stage 1: Zero-Shot + Ensemble
+- The system first applies zero-shot LLM prompting to classify hospitalization cases based on imaging reports.
+- Each case is evaluated three times with ensemble averaging to enhance stability.
+- Uncertainty is quantified by measuring entropy from the model’s confidence scores.
+- Cases with high uncertainty proceed to Stage 2 for further refinement.
+
+Stage 2: Few-Shot + RAG 
+- High-uncertainty cases from Stage 1 are re-evaluated using few-shot prompts.
+- The system retrieves low-uncertainty examples from Stage 1 to guide the model’s reasoning and improve classification accuracy.
+- Cases that remain uncertain after this stage move on to manual review.
+
+Stage 3: Manual Chart Review for Remaining Uncertain Cases
+- Cases that remain uncertain after automated processing undergo manual review by physicians.
 
 ![Architecture](./images/architecture.png)
 

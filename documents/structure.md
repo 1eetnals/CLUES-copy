@@ -1,4 +1,4 @@
-# Acute Stroke Patient Classification System - File Structure
+# CLUES - File Structure
 
 ## Project Structure
 

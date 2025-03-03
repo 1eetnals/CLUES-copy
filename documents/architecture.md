@@ -2,7 +2,7 @@
 
 ## System Overview
 
-The Acute Stroke Patient Classification System is a modular system that analyzes medical imaging reports to classify patients. This system integrates Zero-Shot learning, Few-Shot learning, RAG (Retrieval-Augmented Generation), and ensemble techniques to achieve accurate patient classification.
+CLUES (Confidence-Linked and Uncertainty-Based Staged Framework) is a three-stage system designed to classify cases for disease of interest while optimizing efficiency and reliability through uncertainty quantification and selective human review. It integrates Large Language Models (LLMs) with entropy-based uncertainty measures to enhance the accuracy and consistency of phenotype validation in large-scale datasets. As a pilot study, we applied CLUES to imaging reports to assess its performance in identifying stroke disease in hospitalized patients.
 
 ## Main Module Flow
 

@@ -1,4 +1,4 @@
-# Acute Stroke Patient Classification System - Architecture
+# CLUES - Architecture
 
 ## System Overview
 

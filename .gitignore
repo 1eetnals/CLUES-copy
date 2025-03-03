@@ -1,0 +1,6 @@
+.env
+.obsidian/
+__pycache__/
+output/
+Data.xlsx
+

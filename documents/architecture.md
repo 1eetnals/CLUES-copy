@@ -2,7 +2,7 @@
 
 ## System Overview
 
-CLUES (Confidence-Linked and Uncertainty-Based Staged Framework) is a three-stage system designed to classify cases for disease of interest while optimizing efficiency and reliability through uncertainty quantification and selective human review. It integrates Large Language Models (LLMs) with entropy-based uncertainty measures to enhance the accuracy and consistency of phenotype validation in large-scale datasets. As a pilot study, we applied CLUES to imaging reports to assess its performance in identifying stroke disease in hospitalized patients.
+CLUES (Confidence-Linked and Uncertainty-Based Staged) framework is a three-stage system designed to classify cases for disease of interest while optimizing efficiency and reliability through uncertainty quantification and selective human review. It integrates Large Language Models (LLMs) with entropy-based uncertainty measures to enhance the accuracy and consistency of phenotype validation in large-scale datasets. As a case study, we applied CLUES to imaging reports to assess its performance in identifying stroke disease in hospitalized patients.
 
 ## Main Module Flow
 

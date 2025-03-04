@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 from langchain_community.document_loaders.csv_loader import CSVLoader
-from langchain_community.embeddings import OpenAIEmbeddings
+from langchain_openai import OpenAIEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain_community.retrievers import BM25Retriever
 from langchain.retrievers.ensemble import EnsembleRetriever
@@ -15,7 +15,6 @@ from utils import (
     IMAGING_TYPES, 
     FEWSHOT_PROMPT,
     DISEASE_OF_INTEREST,
-    OUTPUT_DIR,
     ensure_output_dir
 )
 from dotenv import load_dotenv
@@ -43,8 +42,16 @@ def setup_retrieval_system(imaging_type, openai_api_key=None):
     if not os.path.exists(csv_path):
         raise FileNotFoundError(f"RAG dataset file not found: {csv_path}")
         
+    # Load and check data
+    df = pd.read_csv(csv_path)
+    if len(df) == 0:
+        raise ValueError(f"RAG dataset is empty for {imaging_type}")
+        
     loader = CSVLoader(csv_path, source_column='Output')   
     docs = loader.load()
+    if not docs:
+        raise ValueError(f"No documents loaded from RAG dataset for {imaging_type}")
+        
     doc_list = [doc.page_content for doc in docs]      # Create list for lexical search
 
     ##### 2) Embeddings
@@ -58,7 +65,7 @@ def setup_retrieval_system(imaging_type, openai_api_key=None):
     vectorstore = FAISS.from_documents(docs, embeddings)
 
     ##### 4) Search
-    k = 6  # Number of similar documents to retrieve
+    k = min(6, len(docs))  # Number of similar documents to retrieve (not more than available docs)
 
     # Set up lexical search with BM25
     bm25_retriever = BM25Retriever.from_texts(doc_list)
@@ -77,7 +84,7 @@ def setup_retrieval_system(imaging_type, openai_api_key=None):
 
     return ensemble_retriever, k
 
-def retrieve_shots(query, retriever, k):
+async def retrieve_shots(query, retriever, k):
     """
     Retrieve shots related to the query.
     
@@ -89,7 +96,7 @@ def retrieve_shots(query, retriever, k):
     Returns:
         str: Formatted search results
     """
-    # Retrieve documents related to query
+    # Retrieve documents related to query using get_relevant_documents
     shots_tot = retriever.get_relevant_documents(query)
     # Extract and format content from retrieved documents
     shots = [doc.page_content for doc in shots_tot[:k]]
@@ -113,7 +120,7 @@ async def fewshot_run_async(main_prompt, information, imaging_report, doi, retri
     """
     tasks = []
     for i in information:
-        shots = retrieve_shots(i, retriever, k)
+        shots = await retrieve_shots(i, retriever, k)
         new_prompt = main_prompt.format(imaging_report=imaging_report, disease=doi, fewshot_retrieval=shots, input_text=i)
         tasks.append(chat_completion(new_prompt))
     responses = await asyncio.gather(*tasks)
@@ -133,72 +140,159 @@ async def process_stage2(stage1_high_df, openai_api_key=None, batch_size=15):
     """
     output_dir = ensure_output_dir()
     
-    for imaging_type, base_column_name in IMAGING_TYPES:
-        if imaging_type not in stage1_high_df.columns:
-            continue
-            
-        print(f"\nProcessing {base_column_name} for Stage 2...")
+    print("\n=== Stage 2 Processing Information ===")
+    print(f"Total cases to process: {len(stage1_high_df)}")
+    
+    # Initialize Stage 2 columns
+    for _, base_column_name in IMAGING_TYPES:
+        stage1_high_df[f'Stage2_{base_column_name}_predict'] = np.nan
+        stage1_high_df[f'Stage2_{base_column_name}_prob_mean'] = np.nan
+    
+    # Process each imaging type with progress bar
+    imaging_pbar = tqdm(IMAGING_TYPES, desc="Processing imaging types", unit="type")
+    for imaging_type, base_column_name in imaging_pbar:
+        imaging_pbar.set_postfix_str(f"Current: {base_column_name}")
         
-        # Load RAG dataset
-        rag_file = os.path.join(output_dir, f'{base_column_name}.csv')
-        if not os.path.exists(rag_file):
-            print(f"Warning: RAG dataset not found for {base_column_name}")
+        print(f"\nProcessing {base_column_name}:")
+        
+        if imaging_type not in stage1_high_df.columns:
+            print(f"Column {imaging_type} not found in dataframe")
             continue
             
-        # Set up retrieval system
-        retriever, k = setup_retrieval_system(base_column_name, openai_api_key)
+        # Convert empty strings and whitespace-only strings to NaN
+        stage1_high_df[imaging_type] = stage1_high_df[imaging_type].replace(r'^\s*$', np.nan, regex=True)
+        
+        # Skip if all values are NaN
+        if stage1_high_df[imaging_type].isna().all():
+            print(f"All values are NaN for {base_column_name}")
+            continue
+        
+        # Create nan mask and handle nan values first
+        nan_mask = (
+            stage1_high_df[imaging_type].isna() |  # NaN values
+            (stage1_high_df[imaging_type].astype(str).str.strip() == '') |  # Empty strings
+            (stage1_high_df[imaging_type].astype(str).str.lower() == 'nan') |  # 'nan' strings
+            (stage1_high_df[imaging_type].astype(str).str.lower() == 'none') |  # 'none' strings
+            ~stage1_high_df[imaging_type].astype(str).str.strip().astype(bool)  # Falsy values
+        )
+        
+        print(f"Found {nan_mask.sum()} NaN/invalid values")
+        
+        # Set NaN values
+        nan_indices = stage1_high_df[nan_mask].index
+        for idx in nan_indices:
+            stage1_high_df.at[idx, f'Stage2_{base_column_name}_predict'] = np.nan
+            stage1_high_df.at[idx, f'Stage2_{base_column_name}_prob_mean'] = np.nan
+        
+        # Process only valid non-NaN values
+        non_nan_mask = ~nan_mask
+        non_nan_count = non_nan_mask.sum()
+        
+        print(f"Processing {non_nan_count} valid values")
+        
+        if non_nan_count == 0:
+            continue
+        
+        # Get non-NaN values and indices
+        non_nan_indices = stage1_high_df[non_nan_mask].index
+        non_nan_values = stage1_high_df.loc[non_nan_mask, imaging_type].values
+        
+        # Additional validation of non-NaN values
+        valid_values = []
+        valid_indices = []
+        
+        for idx, val in zip(non_nan_indices, non_nan_values):
+            # Convert to string and clean
+            str_val = str(val).strip()
             
-        # Get non-NaN indices and values
-        non_nan_indices = stage1_high_df[imaging_type].dropna().index
-        non_nan_values = stage1_high_df[imaging_type].dropna().values
-                    
-        # Split data into batches
-        batches = [non_nan_values[j:j + batch_size].tolist() for j in range(0, len(non_nan_values), batch_size)]
+            # Skip if empty or invalid
+            if not str_val or str_val.lower() in ['nan', 'none', 'null', '']:
+                stage1_high_df.at[idx, f'Stage2_{base_column_name}_predict'] = np.nan
+                stage1_high_df.at[idx, f'Stage2_{base_column_name}_prob_mean'] = np.nan
+                continue
+                
+            valid_values.append(str_val)
+            valid_indices.append(idx)
+        
+        print(f"Found {len(valid_values)} values after validation")
+        
+        if not valid_values:
+            continue
             
-        outputs = []
-        for batch in tqdm(batches, desc=f"Processing {imaging_type} for Stage 2"):
-            output = await fewshot_run_async(FEWSHOT_PROMPT, batch, imaging_type, DISEASE_OF_INTEREST, retriever, k)
-            outputs.extend(output)
+        try:
+            # Load RAG dataset
+            rag_file = os.path.join(output_dir, f'{base_column_name}.csv')
+            if not os.path.exists(rag_file):
+                print(f"RAG dataset not found for {base_column_name}")
+                continue
+                
+            # Set up retrieval system
+            retriever, k = setup_retrieval_system(base_column_name, openai_api_key)
             
-        # Extract results from outputs
-        results = [output.choices[0].message.content for output in outputs]
+            # Split data into batches
+            batches = [valid_values[j:j + batch_size] for j in range(0, len(valid_values), batch_size)]
+            batch_indices = [valid_indices[j:j + batch_size] for j in range(0, len(valid_indices), batch_size)]
             
-        # Save results to corresponding column
-        result_column = f'Stage2_{base_column_name}_predict'
-        for idx, result in zip(non_nan_indices, results):
-            stage1_high_df.at[idx, result_column] = result
-    
-    # Create temporary dictionary for probability calculations
-    temp_results = {f'Stage2_{t[1]}_prob': [] for t in IMAGING_TYPES}
-    
-    # Process each imaging type
-    for imaging_type, base_column_name in IMAGING_TYPES:
-        predict_column = f'Stage2_{base_column_name}_predict'
-    
-        # Get non-NaN values and corresponding indices
-        non_nan_indices = stage1_high_df[predict_column].dropna().index
-        non_nan_values = stage1_high_df[predict_column].dropna().values
-    
-        results = []
-        for value in non_nan_values:
-            results.append(detect_prob(value))
-    
-        # Add results to corresponding list in temporary dictionary
-        temp_results[f'Stage2_{base_column_name}_prob'].append(pd.Series(results, index=non_nan_indices))
-    
-    # Calculate mean probabilities for each imaging type
-    for key, value in temp_results.items():
-        if value:
-            stage1_high_df[key + '_mean'] = pd.concat(value, axis=1).mean(axis=1, skipna=True)
+            print(f"Processing {len(batches)} batches")
+            
+            # Process batches
+            outputs = []
+            processed_indices = []
+            
+            batch_pbar = tqdm(zip(batches, batch_indices), 
+                            desc=f"Processing {base_column_name} batches", 
+                            total=len(batches), 
+                            unit="batch",
+                            leave=False)
+            
+            for batch, batch_idx in batch_pbar:
+                output = await fewshot_run_async(FEWSHOT_PROMPT, batch, imaging_type, DISEASE_OF_INTEREST, retriever, k)
+                outputs.extend(output)
+                processed_indices.extend(batch_idx)
+            
+            print(f"Successfully processed {len(outputs)} outputs")
+            
+            # Save results
+            for idx, output in zip(processed_indices, outputs):
+                result = output.choices[0].message.content
+                stage1_high_df.at[idx, f'Stage2_{base_column_name}_predict'] = result
+            
+            # Process probabilities
+            prob_count = 0
+            prob_pbar = tqdm(valid_indices, desc="Calculating probabilities", unit="row", leave=False)
+            for idx in prob_pbar:
+                predict_column = f'Stage2_{base_column_name}_predict'
+                value = stage1_high_df.at[idx, predict_column]
+                
+                if pd.notna(value) and value != 'nan':
+                    prob = detect_prob(value)
+                    if pd.notna(prob):
+                        stage1_high_df.at[idx, f'Stage2_{base_column_name}_prob_mean'] = prob
+                        prob_count += 1
+                    else:
+                        stage1_high_df.at[idx, f'Stage2_{base_column_name}_prob_mean'] = np.nan
+                else:
+                    stage1_high_df.at[idx, f'Stage2_{base_column_name}_prob_mean'] = np.nan
+            
+            print(f"Calculated {prob_count} valid probabilities")
+            
+        except Exception as e:
+            print(f"Error processing {base_column_name}: {str(e)}")
+            continue
     
     # Calculate maximum probability across all imaging types
     stage1_high_df['Stage2_prob'] = stage1_high_df[[f'Stage2_{t[1]}_prob_mean' for t in IMAGING_TYPES]].max(axis=1, skipna=True)
-    stage1_high_df['Stage2_prob'].fillna(0, inplace=True)
     
-    # Calculate entropy
+    # Calculate entropy only for non-NaN probabilities
     probs = stage1_high_df['Stage2_prob'].values
-    entropies = calculate_entropy(probs)
+    mask = ~np.isnan(probs)
+    entropies = np.full_like(probs, np.nan)
+    entropies[mask] = calculate_entropy(probs[mask])
     stage1_high_df['Stage2_entropy'] = entropies
+    
+    print("\nFinal Statistics:")
+    print(f"Total valid probabilities: {mask.sum()}")
+    print(f"Total NaN probabilities: {(~mask).sum()}")
     
     # Save results
     stage1_high_df.to_excel(os.path.join(output_dir, 'Stage2_result.xlsx'), index=False)
@@ -218,13 +312,34 @@ def split_stage2_by_entropy(stage1_high_df):
     # Check output directory
     output_dir = ensure_output_dir()
     
+    print("\n=== Stage 2 Split Information ===")
+    print(f"Total Stage 1 high entropy cases: {len(stage1_high_df)}")
+    
     # Group based on entropy values
     Stage2_entropy_list = stage1_high_df['Stage2_entropy'].values
     cutoff_value = stage1_high_df['Stage2_entropy'].median()
+    print(f"Entropy cutoff value: {cutoff_value}")
+    
     high, low = uc_grouping(Stage2_entropy_list, cutoff=cutoff_value)
     
     Stage2_high = stage1_high_df.loc[high].reset_index(drop=True)
     Stage2_low = stage1_high_df.loc[low].reset_index(drop=True)
+    
+    print(f"Stage 2 high entropy group size: {len(Stage2_high)}")
+    print(f"Stage 2 low entropy group size: {len(Stage2_low)}")
+    print(f"Total after split: {len(Stage2_high) + len(Stage2_low)}")
+    
+    if len(stage1_high_df) != len(Stage2_high) + len(Stage2_low):
+        print("WARNING: Total cases mismatch after Stage 2 split!")
+        
+    # Check for duplicates between groups
+    high_ids = set(Stage2_high['연구번호']) if '연구번호' in Stage2_high.columns else set()
+    low_ids = set(Stage2_low['연구번호']) if '연구번호' in Stage2_low.columns else set()
+    duplicates = high_ids.intersection(low_ids)
+    
+    if duplicates:
+        print(f"WARNING: Found {len(duplicates)} duplicate cases between Stage 2 groups!")
+        print(f"Duplicate IDs: {duplicates}")
     
     # Save results
     Stage2_high.to_excel(os.path.join(output_dir, 'Stage2_high_entropygroup.xlsx'), index=False)
@@ -248,16 +363,40 @@ def combine_results(stage1_low_df, stage1_high_df, stage2_high_df, stage2_low_df
     # Check output directory
     output_dir = ensure_output_dir()
     
+    print("\n=== Results Combination Information ===")
+    print(f"Stage 1 low entropy group size: {len(stage1_low_df)}")
+    print(f"Stage 1 high entropy group size: {len(stage1_high_df)}")
+    print(f"Stage 2 high entropy group size: {len(stage2_high_df)}")
+    print(f"Stage 2 low entropy group size: {len(stage2_low_df)}")
+    
     # Using Stage 1 results only
     stage1_low_df['Stage2_prob'] = stage1_low_df['Stage1_prob']
     combined_df_1 = pd.concat([stage1_low_df, stage1_high_df], ignore_index=True)
-    combined_df_1.to_excel(os.path.join(output_dir, 'Stage2_result.xlsx'), index=False)
+    print(f"\nStage 2 combined result size: {len(combined_df_1)}")
+    
+    # Check for duplicates in Stage 2 results
+    if '연구번호' in combined_df_1.columns:
+        duplicates = combined_df_1['연구번호'].duplicated().sum()
+        if duplicates > 0:
+            print(f"WARNING: Found {duplicates} duplicate cases in Stage 2 results!")
+            print("Duplicate IDs:", combined_df_1[combined_df_1['연구번호'].duplicated(keep=False)]['연구번호'].unique())
     
     # Using Stage 1, 2, 3 results
     stage1_low_df['Stage3_prob'] = stage1_low_df['Stage1_prob']
     stage2_low_df['Stage3_prob'] = stage2_low_df['Stage2_prob']
     stage2_high_df['Stage3_prob'] = stage2_high_df['Label']  # Use final label
     combined_df_2 = pd.concat([stage1_low_df, stage2_low_df, stage2_high_df], ignore_index=True)
+    print(f"\nStage 3 combined result size: {len(combined_df_2)}")
+    
+    # Check for duplicates in Stage 3 results
+    if '연구번호' in combined_df_2.columns:
+        duplicates = combined_df_2['연구번호'].duplicated().sum()
+        if duplicates > 0:
+            print(f"WARNING: Found {duplicates} duplicate cases in Stage 3 results!")
+            print("Duplicate IDs:", combined_df_2[combined_df_2['연구번호'].duplicated(keep=False)]['연구번호'].unique())
+    
+    # Save results
+    combined_df_1.to_excel(os.path.join(output_dir, 'Stage2_result.xlsx'), index=False)
     combined_df_2.to_excel(os.path.join(output_dir, 'Stage3_result.xlsx'), index=False)
     
     return combined_df_1, combined_df_2 

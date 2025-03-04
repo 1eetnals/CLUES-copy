@@ -18,13 +18,19 @@ def evaluate_binary_classification(df, prob_column):
     if len(df) == 0:
         return None
         
+    # Remove rows where Label is 1 (equivocal)
+    df = df[df['Label'] != 1].copy()
+    if len(df) == 0:
+        return None
+        
     y_true = df['Label'].values
     y_pred = (df[prob_column] >= 0.5).astype(int)
     
-    # Set average for multi-class data handling
-    average = 'macro' if len(np.unique(y_true)) > 2 else 'binary'
+    # Convert Label 2 to 1 for binary classification
+    y_true = (y_true == 2).astype(int)
     
-    precision, recall, f1, _ = precision_recall_fscore_support(y_true, y_pred, average=average)
+    # Set average for multi-class data handling
+    precision, recall, f1, _ = precision_recall_fscore_support(y_true, y_pred, average='binary')
     conf_matrix = confusion_matrix(y_true, y_pred)
     
     try:

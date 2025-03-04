@@ -1,13 +1,9 @@
 import asyncio
 import argparse
 import pandas as pd
-import numpy as np
-import os
 from utils import (
     set_openai_api_key,
     DATA_FILE,
-    DISEASE_OF_INTEREST,
-    IMAGING_TYPES,
     setup_device,
     ensure_output_dir
 )

@@ -1,8 +1,7 @@
 import pandas as pd
 import re
-import numpy as np
 import os
-from utils import IMAGING_TYPES, OUTPUT_DIR, ensure_output_dir
+from utils import IMAGING_TYPES, ensure_output_dir
 
 def load_data(filepath):
     """
@@ -58,8 +57,13 @@ def prepare_rag_datasets(low_entropy_df):
     
     for imaging_type, base_column_name in IMAGING_TYPES:
         # Extract data for this imaging type
-        data = low_entropy_df[[imaging_type, f'Stage1_{base_column_name}_prob_mean']]
+        data = low_entropy_df[[imaging_type, f'Stage1_{base_column_name}_prob']]
         data = data.dropna()
+        
+        # Skip if no data available
+        if len(data) == 0:
+            print(f"Warning: No data available for {base_column_name} RAG dataset")
+            continue
         
         # Rename columns
         data.columns = ['Input', 'Output']

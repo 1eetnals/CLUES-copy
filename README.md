@@ -118,10 +118,6 @@ For detailed information about the system architecture, please refer to:
 4. Push to the branch (`git push origin feature/AmazingFeature`)
 5. Open a Pull Request
 
-## License
-
-This project is licensed under the MIT License
-
 ## Contact
+SuminLee: lsm0801@yuhs.ac
 
-Project Link: https://github.com/1eetnals/clues 
